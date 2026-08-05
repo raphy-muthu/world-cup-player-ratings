@@ -9,8 +9,8 @@ import pandas as pd
 squads = pd.read_csv('data/raw/world-cup-2026/squads_and_players.csv')
 stats = pd.read_csv('data/raw/world-cup-2026/player_stats.csv')
 
-squads.shape
-stats.shape
+print(f"Squads shape: {squads.shape}")
+print(f"Stats shape: {stats.shape}")
 
 # Merge on player_id (exact join, shared key)
 wc = squads.merge(stats, on='player_id', suffixes=('', '_stats'))
@@ -37,6 +37,27 @@ wc = wc.drop(columns=['player_name_stats', 'team_id_stats', 'position_stats'])
 print("\nGK-only stat coverage by position:")
 print(wc.groupby('position')[['clean_sheets', 'saves', 'goals_conceded']].apply(lambda x: x.notna().sum()))
 
+print("Minutes Played: ")
+print(wc["minutes_played"].describe())
+
+bins = [-1, 0, 90, 270, wc["minutes_played"].max()]
+labels = ["0", "1-90", "91-270", "271+"]
+
+minuteBuckets = pd.cut(wc["minutes_played"], bins=bins, labels=labels).value_counts().sort_index()
+print(minuteBuckets)
+
+print(f"Sum of buckets: {minuteBuckets.sum()}")
+print(f"Total players: {len(wc)}")
+
+
+#Excluding players with under 90 minutes played (1 full match) since there needs to be at least 1 full match played to have any meaningful stats
+print(f"WC Rows BEFORE filtering= {len(wc)}")
+
+
+wc = wc[wc['minutes_played'] > 90]
+print(f"WC Rows AFTER filtering = {len(wc)}")
+
+
 
 
 print(f"Squads rows: {len(squads)}")
@@ -47,20 +68,7 @@ print(wc.head())
 print()
 print("Columns:", list(wc.columns))
 
-wc.to_csv('data/processed/wc_merged.csv', index=False)
+wc.to_csv("data/processed/wc_merged.csv", index=False)
 print("\nSaved to data/processed/wc_merged.csv")
-
-
-print("Minutes Played: ")
-print(wc["minutes_played"].describe())
-
-bins = [-1, 0, 90, 270, 810]
-labels = ["0", "1-90", "91-270", "271+"]
-
-minuteBuckets = pd.cut(wc['minutes_played'], bins=bins, labels=labels).value_counts().sort_index()
-print(minuteBuckets)
-
-print(f"Sum of buckets: {minuteBuckets.sum()}")
-print(f"Total players: {len(wc)}")
 
 
