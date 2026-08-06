@@ -71,4 +71,3 @@ print("Columns:", list(wc.columns))
 wc.to_csv("data/processed/wc_merged.csv", index=False)
 print("\nSaved to data/processed/wc_merged.csv")
 
-
