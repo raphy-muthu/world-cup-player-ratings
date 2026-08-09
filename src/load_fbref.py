@@ -4,6 +4,8 @@ DOCSTRING
 
 import pandas as pd
 
+from utils import normalizeName
+
 fbref = pd.read_csv("data/raw/players_data_light-2025_2026.csv")
 
 print(fbref.head())
@@ -28,7 +30,6 @@ print(fbref["nationality_code"].isna().sum())
 # 3 players have missing nations (Nathan Mbala, Luis Orejuela, Yael Trepy). Can get nation from google
 print(fbref[fbref['nationality_code'].isna()][['Player', 'Nation', 'Squad', "Pos"]])
 
-fbref.to_csv("data/processed/fbref_cleaned.csv", index=False)
 print("\nSaved to data/processed/fbref_cleaned.csv")
 
 fbrefGrouped = fbref.groupby("Player").size()
@@ -74,5 +75,31 @@ assert len(fbref_aggregated) == fbref['Player'].nunique(), "Aggregation didn't c
 # Spot check a known transferred player to confirm it worked as expected
 print(fbref_aggregated[fbref_aggregated['Player'] == 'Adama Traoré'])
 
+fbref_aggregated['name_norm'] = fbref_aggregated['Player'].apply(normalizeName)
+
 fbref_aggregated.to_csv("data/processed/fbref_cleaned.csv", index=False)
 print("Saved to data/processed/fbref_cleaned.csv")
+
+assert len(fbref_aggregated) == fbref_aggregated['Player'].nunique(), \
+    "Duplicate player rows still exist after aggregation!"
+
+assert 'name_norm' in fbref_aggregated.columns, "name_norm column is missing!"
+assert fbref_aggregated['name_norm'].isna().sum() == 0, \
+    "Some name_norm values are missing!"
+
+missing_nat = fbref_aggregated['nationality_code'].isna().sum()
+assert missing_nat <= 3, \
+    f"Expected at most 3 missing nationality codes, found {missing_nat}"
+
+for col in ['PK_stats_shooting', 'PKatt_stats_shooting', 'CrdY_stats_misc', 'CrdR_stats_misc']:
+    assert col not in fbref_aggregated.columns, f"{col} should have been dropped!"
+
+# 5. Known transferred player should show combined minutes, not a partial season
+traore_row = fbref_aggregated[fbref_aggregated['Player'] == 'Adama Traoré']
+assert len(traore_row) == 1, "Adama Traoré should appear exactly once after aggregation"
+assert traore_row['Min'].values[0] > 300, "Adama Traoré's minutes look too low — aggregation may have failed"
+
+# 6. Sanity check on row count — should be well under the pre-aggregation total
+assert len(fbref_aggregated) < 2839, "Row count didn't shrink — aggregation may not have run"
+
+print("All load_fbref.py validation checks passed.")

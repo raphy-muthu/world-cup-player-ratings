@@ -4,6 +4,7 @@ Join key: player_id (exact match, both files share this key).
 """
 
 import pandas as pd
+from utils import normalizeName
 
 # Load World Cup files
 squads = pd.read_csv('data/raw/world-cup-2026/squads_and_players.csv')
@@ -68,6 +69,9 @@ print(wc.head())
 print()
 print("Columns:", list(wc.columns))
 
+
+#Adds Normalized Name Column
+wc["name_norm"] = wc["player_name"].apply(normalizeName)
+
 wc.to_csv("data/processed/wc_merged.csv", index=False)
 print("\nSaved to data/processed/wc_merged.csv")
-
