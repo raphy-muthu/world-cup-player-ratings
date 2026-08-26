@@ -75,3 +75,7 @@ print(f"  Club plausibly Big-5 but still unmatched (below fuzzy threshold / reje
 still_unmatched.to_csv("data/processed/wc_still_unmatched.csv", index=False)
 print("\nSaved final table to data/processed/wc_fbref_final.csv")
 print("Saved still-unmatched breakdown to data/processed/wc_still_unmatched.csv")
+
+
+final = pd.read_csv("data/processed/wc_fbref_final.csv")
+print("FINAL COLUMNS: ", final.columns)

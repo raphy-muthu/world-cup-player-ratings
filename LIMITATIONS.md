@@ -62,3 +62,27 @@ WC↔FBref join and rating model. Add to this as new issues surface.
   feature, not four separate models. See `notebooks/` (if position-split vs.
   combined-model decision is written up there — otherwise this doc is the
   record of that decision).
+
+- **`relative_score`/`final_rating` (in `player_ratings.csv`) do not currently
+  measure the project's core premise.** The project's stated goal is to rate a
+  player by deviation from their own club-season baseline — did they over- or
+  under-perform their normal level at the tournament. The current formula in
+  `build_ratings.py` instead z-scores WC rate and club rate *independently*
+  against position peers and averages them, which measures general quality
+  across both contexts, not a within-player before/after delta. Confirmed with
+  real examples: Michael Olise, Ousmane Dembélé, and Alphonso Davies all
+  *underperformed their own club rate* at the WC (negative WC-minus-club
+  delta) yet rank in the current top 10 by `final_rating` anyway. Planned fix:
+  redesign around `z(WC_rate - club_rate)` per player, not `z(WC_rate)` and
+  `z(club_rate)` averaged. Not yet implemented — pending design review.
+
+- **Feature leakage risk for Phase 4 (predictive modeling).** `final_rating`
+  is built directly from: `yellow_cards`, `red_cards`, WC `minutes_played`,
+  `Gls`, `Ast`, club `Min` (FBref), `saves`, `clean_sheets`, `goals_conceded`,
+  `matches_played`. None of these 10 columns should be used as a predictive
+  feature for `final_rating` (or any target derived from it) — doing so would
+  let a model partially reconstruct its own label instead of predicting it,
+  inflating validation metrics in a way that wouldn't hold up under scrutiny.
+  Everything else on the original candidate feature list is clean: `position`,
+  `caps`, `career_goals`, `matches_started`, `penalty_goals`, `own_goals`,
+  and club-side `MP`/`Starts`/`TklW`/`Int`/`Crs`/`Fls`/`CrdY`/`CrdR`.

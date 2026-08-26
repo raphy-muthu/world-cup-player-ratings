@@ -2,13 +2,29 @@
 Step 4: Build final_rating for each matched player from wc_fbref_final.csv.
 
 Design:
-- Outfielders (DEF/MID/FWD): blend WC-tournament and club-season goal/assist
-  productivity (per-90), standardized within position, minus a card-discipline
-  penalty (also standardized within position).
+- Outfielders (DEF/MID/FWD): relative_score measures WC-vs-own-club-baseline
+  DEVIATION, not general quality. For each player, delta = WC_rate - club_rate
+  is computed per metric (goals, assists), THEN standardized within position —
+  not the other way around. Standardizing WC_rate and club_rate separately and
+  averaging (an earlier version of this script) measures "how good is this
+  player across both contexts," which is a different question and produces
+  wrong answers for this project's actual goal: it ranked players who
+  underperformed their own club rate at the WC (Olise, Dembele, Davies — all
+  had negative WC-minus-club deltas) inside the top 10, because their high
+  club numbers alone were enough to carry the average. Standardizing the delta
+  itself fixes this — it can only reward a player for outperforming their OWN
+  normal level, not for having a high normal level in general.
+- Minus a card-discipline penalty (standardized within position, deliberately
+  unshrunk — see below).
 - GKs: fbref_cleaned.csv carries no goalkeeper stats (Saves/GA/CS were dropped
-  in load_fbref.py), so club-side comparison isn't possible for them. GKs get
-  their own formula built only from WC-side keeper stats (saves, goals
-  conceded, clean sheets), standardized within the GK group only.
+  in load_fbref.py), so there is no club-side keeper baseline to compute a
+  delta against — the WC-vs-own-baseline concept this project is built around
+  literally cannot be computed for GKs with the data available. GKs keep the
+  old rate-based design instead: their own formula built only from WC-side
+  keeper stats (saves, goals conceded, clean sheets), standardized against
+  other GKs. This means GKs are rated on a different concept (absolute WC
+  performance vs. peers) than outfielders (WC-vs-own-baseline) — a real,
+  data-driven limitation, not an oversight. See LIMITATIONS.md.
 
 Both branches guard against two real edge cases rather than assuming they
 can't happen:
@@ -130,8 +146,20 @@ print(outfield.groupby("position")[production_metrics + ["cards_per90"]].std(ddo
 print("Position-level std (outfielders, RAW rates, for comparison):")
 print(outfield.groupby("position")[[c + "_raw" for c in production_metrics] + ["cards_per90_raw"]].std(ddof=1).round(3))
 
-# --- Z-scores within position, average into relative_score ---
-outfield, z_cols = zscore_within_group(outfield, production_metrics, "position")
+# --- WC-vs-own-club-baseline delta (the core of this project's premise):
+#     compute the per-player deviation FIRST, using the already-shrunk rates,
+#     then standardize the deviation itself within position. This is the
+#     opposite order from standardizing each rate separately and averaging —
+#     that order measures general quality, this order measures over/under-
+#     performance relative to the player's own established level. ---
+outfield["delta_goals"] = outfield["wc_goals_per90"] - outfield["club_goals_per90"]
+outfield["delta_assists"] = outfield["wc_assists_per90"] - outfield["club_assists_per90"]
+
+delta_metrics = ["delta_goals", "delta_assists"]
+print("\nPosition-level std of WC-vs-club delta (outfielders):")
+print(outfield.groupby("position")[delta_metrics].std(ddof=1).round(3))
+
+outfield, z_cols = zscore_within_group(outfield, delta_metrics, "position")
 outfield["relative_score"] = outfield[z_cols].mean(axis=1)
 
 # --- Card penalty: standardized within position, subtracted ---
@@ -185,11 +213,28 @@ gk["rating_method"] = "goalkeeper"
 # ============================================================
 # COMBINE + SAVE
 # ============================================================
-keep_cols = [
+shared_cols = [
     "player_id", "player_name", "position", "club_team", "nationality_code",
-    "minutes_played", "relative_score", "card_penalty", "final_rating", "rating_method",
+    "minutes_played",
 ]
-ratings = pd.concat([outfield[keep_cols], gk[keep_cols]], ignore_index=True)
+# Every factor that actually feeds relative_score, plus the final outputs.
+# Outfield and GK use different factors (see module docstring for why), so the
+# two branches keep different columns here — concat aligns by name and fills
+# NaN for whichever set doesn't apply to a given row, which is the correct,
+# transparent way to show "this factor doesn't apply to this position."
+outfield_cols = shared_cols + [
+    "wc_goals_per90", "wc_assists_per90", "club_goals_per90", "club_assists_per90",
+    "delta_goals", "delta_assists", "z_delta_goals", "z_delta_assists",
+    "cards_per90", "z_cards_per90",
+    "relative_score", "card_penalty", "final_rating", "rating_method",
+]
+gk_cols = shared_cols + [
+    "saves_per90", "goals_conceded_per90", "clean_sheet_rate",
+    "z_saves_per90", "z_goals_conceded_per90", "z_clean_sheet_rate",
+    "cards_per90", "z_cards_per90",
+    "relative_score", "card_penalty", "final_rating", "rating_method",
+]
+ratings = pd.concat([outfield[outfield_cols], gk[gk_cols]], ignore_index=True)
 
 assert ratings["player_id"].is_unique, "A player ended up with more than one rating row"
 assert ratings["final_rating"].notna().all(), "Some players have a null final_rating"
