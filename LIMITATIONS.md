@@ -86,3 +86,26 @@ WC↔FBref join and rating model. Add to this as new issues surface.
   Everything else on the original candidate feature list is clean: `position`,
   `caps`, `career_goals`, `matches_started`, `penalty_goals`, `own_goals`,
   and club-side `MP`/`Starts`/`TklW`/`Int`/`Crs`/`Fls`/`CrdY`/`CrdR`.
+
+- **`match_type` must also be excluded from any feature set**, for a different
+  reason than the 10 above: it's not part of a player's season, it's an
+  artifact of this project's own name-matching pipeline (exact vs. fuzzy
+  join). Including it risks the model picking up a spurious correlation
+  between match confidence and rating that has nothing to do with football.
+
+- **`shots` and `shots_on_target` are 100% null in the raw source data**
+  (`data/raw/world-cup-2026/player_stats.csv`, confirmed across all 1248 rows
+  before any filtering — every other stat column in that file, e.g. `assists`,
+  is fully populated). Traced through every pipeline stage
+  (`player_stats.csv` -> `wc_merged.csv` -> `wc_fbref_final.csv`) and the
+  emptiness is present from the very first byte — this is a genuine gap in
+  the upstream data source, not a bug introduced by any join/merge in this
+  project. Excluded from the Phase 4 feature set for this reason, unrelated
+  to the leakage issue above — there's no data here to leak or use.
+
+- **Locked feature set for Phase 4 (18 features):** the 6 WC + 8 club-side
+  columns above, plus `market_value_eur`, `height_cm`, `age` (derived from
+  `date_of_birth`), and `nationality_code` — all four fully populated (0
+  nulls) across the 320 matched rows. `Squad` was considered and excluded:
+  high-cardinality (many distinct clubs) relative to n≈300, real overfitting
+  risk.
