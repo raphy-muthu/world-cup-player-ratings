@@ -22,7 +22,7 @@ df = pd.read_csv("data/processed/wc_fbref_final.csv")
 ratings = pd.read_csv("data/processed/player_ratings.csv")
 
 EXCLUDED_LEAKAGE_COLS = [
-    "yellow_cards", "red_cards", "minutes_played", "Gls", "Ast", "Min",
+    "yellow_cards", "red_cards", "own_goals", "minutes_played", "Gls", "Ast", "Min",
     "saves", "clean_sheets", "goals_conceded", "matches_played", "match_type",
 ]
 
@@ -40,10 +40,20 @@ outfield["age"] = (
     pd.Timestamp("2026-06-11") - pd.to_datetime(outfield["date_of_birth"])
 ).dt.days / 365.25
 
+# nationality_code is deliberately NOT a feature. One-hot encoding it would turn
+# 1 column into 41 on only 305 rows (4 countries have a single player each), which
+# risks overfitting and dilutes regularization pressure on features that actually
+# predict. Same reasoning that already excluded Squad.
+# own_goals was a feature until the target switched to absolute discipline
+# deductions — it now helps BUILD final_rating (-1.75 each), so using it to
+# predict final_rating would be leakage, same rule as yellow_cards/red_cards.
 feature_cols = [
-    "position", "caps", "career_goals", "matches_started", "penalty_goals", "own_goals",
-    "market_value_eur", "height_cm", "age", "nationality_code",
-    "MP", "Starts",
+    "position", "caps", "career_goals", "matches_started", "penalty_goals",
+    "market_value_eur", "height_cm", "age",
+    # MP dropped: it correlated r=0.865 with Starts (near-duplicate signal), and
+    # keeping Starts instead produced a lower CV MAE in 20/20 random seeds.
+    # MP is still used above as the per-match rate denominator.
+    "Starts",
     "TklW_per_match", "Int_per_match", "Crs_per_match", "Fls_per_match",
     "CrdY_per_match", "CrdR_per_match",
 ]

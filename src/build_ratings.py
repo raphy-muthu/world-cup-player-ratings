@@ -41,11 +41,18 @@ rate, weighted by how much playing time they actually have
 (K90_TRUST_UNITS controls how many 90-minute "units" of prior belief a
 player has to out-play before their own data dominates).
 
-CARDS are deliberately left RAW/unshrunk. Yellow/red cards are meant to have
-a high, direct impact on final_rating by design — shrinking them toward the
-position mean would blunt that on purpose, which is the opposite of what's
-wanted here even though it also reduces the influence of small-sample noise
-on the card penalty.
+DISCIPLINE (yellows, reds, own goals) is an ABSOLUTE deduction, not a relative
+one. Production is measured against a baseline — the player's own club rate,
+then standardized against position peers — because "was this good?" only means
+something in comparison. A booking needs no such comparison: it costs what it
+costs regardless of how many other defenders were booked.
+
+This also removes a real distortion. When the penalty was a z-score, a rare
+card looked extreme purely because most players at a position have none, which
+compressed the group's spread and inflated the outlier — 2 yellows in 95
+minutes once produced a -6.3 penalty, five standard deviations of the
+production score. Flat deductions make the cost legible and bounded:
+-1.0 per yellow, -2.5 per red, -1.75 per own goal.
 """
 
 import numpy as np
@@ -53,6 +60,35 @@ import pandas as pd
 
 K90_TRUST_UNITS = 3  # ~270 minutes of prior weight for per-90 metrics
 K_MATCH_TRUST_UNITS = 3  # ~3 matches of prior weight for match-based rates (e.g. clean sheets)
+
+# Disciplinary deductions are ABSOLUTE, not relative. A yellow costs the same
+# whether or not other players at the position were booked — unlike the
+# production metrics, which are deliberately measured against the player's own
+# club baseline and then standardized against peers.
+#
+# These are flat per-incident costs, so two yellows cost exactly 2x one yellow
+# (matching the intended -1.0 / -2.0 schedule). No z-scoring: the previous
+# z-scored version made a rare card look extreme purely because most players at
+# a position have none, which compressed the group's spread and inflated the
+# outlier's penalty (2 yellows in 95 minutes once produced a -6.3 penalty).
+YELLOW_CARD_PENALTY = 1.00
+RED_CARD_PENALTY = 2.50
+OWN_GOAL_PENALTY = 1.75
+
+
+def discipline_penalty(frame):
+    """Flat, absolute disciplinary deduction — no z-scoring, no rate conversion.
+
+    NOTE: the source data records yellow_cards and red_cards as separate counts,
+    so a red earned via a second yellow is indistinguishable from a straight red.
+    Every red is therefore charged the direct-red rate. 5 of 320 players carry
+    both yellows and a red, so this affects only those rows.
+    """
+    return (
+        YELLOW_CARD_PENALTY * frame["yellow_cards"]
+        + RED_CARD_PENALTY * frame["red_cards"]
+        + OWN_GOAL_PENALTY * frame["own_goals"]
+    )
 
 df = pd.read_csv("data/processed/wc_fbref_final.csv")
 
@@ -127,24 +163,22 @@ outfield["wc_goals_per90_raw"] = outfield["tournament_goals"] / outfield["minute
 outfield["wc_assists_per90_raw"] = outfield["assists"] / outfield["minutes_played"] * 90
 outfield["club_goals_per90_raw"] = outfield["Gls"] / outfield["Min"] * 90
 outfield["club_assists_per90_raw"] = outfield["Ast"] / outfield["Min"] * 90
-outfield["cards_per90_raw"] = (outfield["yellow_cards"] + 2 * outfield["red_cards"]) / outfield["minutes_played"] * 90
 
-# --- Shrunk per-90 rates for PRODUCTION metrics only: blend each player's own
-#     rate with their position's aggregate rate, weighted by minutes played.
-#     Cards are intentionally NOT shrunk — cards are meant to have a high,
-#     direct impact on final_rating, not be smoothed toward the position mean. ---
+# --- Shrunk per-90 rates for PRODUCTION metrics: blend each player's own rate
+#     with their position's aggregate rate, weighted by minutes played.
+#     Discipline is handled separately as a flat absolute deduction — it is not
+#     a rate at all, so it is neither shrunk nor per-90'd. ---
 outfield["wc_goals_per90"] = shrink_rate(outfield, "tournament_goals", "minutes_played", "position", K90_TRUST_UNITS)
 outfield["wc_assists_per90"] = shrink_rate(outfield, "assists", "minutes_played", "position", K90_TRUST_UNITS)
 outfield["club_goals_per90"] = shrink_rate(outfield, "Gls", "Min", "position", K90_TRUST_UNITS)
 outfield["club_assists_per90"] = shrink_rate(outfield, "Ast", "Min", "position", K90_TRUST_UNITS)
-outfield["cards_per90"] = outfield["cards_per90_raw"]
 
 # --- Position-level standard deviations (reported explicitly, not just consumed) ---
 production_metrics = ["wc_goals_per90", "wc_assists_per90", "club_goals_per90", "club_assists_per90"]
-print("\nPosition-level std (outfielders, SHRUNK production rates; cards is RAW, unshrunk):")
-print(outfield.groupby("position")[production_metrics + ["cards_per90"]].std(ddof=1).round(3))
+print("\nPosition-level std (outfielders, SHRUNK production rates):")
+print(outfield.groupby("position")[production_metrics].std(ddof=1).round(3))
 print("Position-level std (outfielders, RAW rates, for comparison):")
-print(outfield.groupby("position")[[c + "_raw" for c in production_metrics] + ["cards_per90_raw"]].std(ddof=1).round(3))
+print(outfield.groupby("position")[[c + "_raw" for c in production_metrics]].std(ddof=1).round(3))
 
 # --- WC-vs-own-club-baseline delta (the core of this project's premise):
 #     compute the per-player deviation FIRST, using the already-shrunk rates,
@@ -162,9 +196,8 @@ print(outfield.groupby("position")[delta_metrics].std(ddof=1).round(3))
 outfield, z_cols = zscore_within_group(outfield, delta_metrics, "position")
 outfield["relative_score"] = outfield[z_cols].mean(axis=1)
 
-# --- Card penalty: standardized within position, subtracted ---
-outfield, card_z_cols = zscore_within_group(outfield, ["cards_per90"], "position")
-outfield["card_penalty"] = outfield["z_cards_per90"]
+# --- Discipline: flat absolute deduction, subtracted ---
+outfield["card_penalty"] = discipline_penalty(outfield)
 outfield["final_rating"] = outfield["relative_score"] - outfield["card_penalty"]
 outfield["rating_method"] = "outfield"
 
@@ -185,18 +218,17 @@ assert (gk["matches_played"] > 0).all(), \
 #
 # With only n=15 GKs, shrinkage matters here even more than for outfielders —
 # there's very little data to distinguish "genuinely elite" from "got lucky
-# in a short match sample." Cards are the exception, same as for outfielders:
-# left raw/unshrunk so they keep their full, direct impact on final_rating.
+# in a short match sample." Discipline is the exception, same as for
+# outfielders: a flat absolute deduction, not shrunk and not z-scored.
 gk["position"] = "GK"  # single group, but keep using the same groupby machinery
 
 gk["saves_per90"] = shrink_rate(gk, "saves", "minutes_played", "position", K90_TRUST_UNITS)
 gk["goals_conceded_per90"] = shrink_rate(gk, "goals_conceded", "minutes_played", "position", K90_TRUST_UNITS)
 gk["clean_sheet_rate"] = shrink_rate(gk, "clean_sheets", "matches_played", "position", K_MATCH_TRUST_UNITS, per=1)
-gk["cards_per90"] = (gk["yellow_cards"] + 2 * gk["red_cards"]) / gk["minutes_played"] * 90
 
 gk_metrics = ["saves_per90", "goals_conceded_per90", "clean_sheet_rate"]
-print("\nPosition-level std (GK, SHRUNK rates; cards is RAW, unshrunk):")
-print(gk[gk_metrics + ["cards_per90"]].std(ddof=1).round(3))
+print("\nPosition-level std (GK, SHRUNK rates):")
+print(gk[gk_metrics].std(ddof=1).round(3))
 
 gk, gk_z_cols = zscore_within_group(gk, gk_metrics, "position")
 
@@ -205,8 +237,7 @@ gk, gk_z_cols = zscore_within_group(gk, gk_metrics, "position")
 gk["relative_score"] = gk[["z_saves_per90", "z_clean_sheet_rate"]].mean(axis=1) * (2 / 3) \
     - gk["z_goals_conceded_per90"] * (1 / 3)
 
-gk, gk_card_z_cols = zscore_within_group(gk, ["cards_per90"], "position")
-gk["card_penalty"] = gk["z_cards_per90"]
+gk["card_penalty"] = discipline_penalty(gk)
 gk["final_rating"] = gk["relative_score"] - gk["card_penalty"]
 gk["rating_method"] = "goalkeeper"
 
@@ -225,13 +256,13 @@ shared_cols = [
 outfield_cols = shared_cols + [
     "wc_goals_per90", "wc_assists_per90", "club_goals_per90", "club_assists_per90",
     "delta_goals", "delta_assists", "z_delta_goals", "z_delta_assists",
-    "cards_per90", "z_cards_per90",
+    "yellow_cards", "red_cards", "own_goals",
     "relative_score", "card_penalty", "final_rating", "rating_method",
 ]
 gk_cols = shared_cols + [
     "saves_per90", "goals_conceded_per90", "clean_sheet_rate",
     "z_saves_per90", "z_goals_conceded_per90", "z_clean_sheet_rate",
-    "cards_per90", "z_cards_per90",
+    "yellow_cards", "red_cards", "own_goals",
     "relative_score", "card_penalty", "final_rating", "rating_method",
 ]
 ratings = pd.concat([outfield[outfield_cols], gk[gk_cols]], ignore_index=True)

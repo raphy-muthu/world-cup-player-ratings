@@ -63,32 +63,43 @@ WC↔FBref join and rating model. Add to this as new issues surface.
   combined-model decision is written up there — otherwise this doc is the
   record of that decision).
 
-- **`relative_score`/`final_rating` (in `player_ratings.csv`) do not currently
-  measure the project's core premise.** The project's stated goal is to rate a
-  player by deviation from their own club-season baseline — did they over- or
-  under-perform their normal level at the tournament. The current formula in
-  `build_ratings.py` instead z-scores WC rate and club rate *independently*
-  against position peers and averages them, which measures general quality
-  across both contexts, not a within-player before/after delta. Confirmed with
-  real examples: Michael Olise, Ousmane Dembélé, and Alphonso Davies all
-  *underperformed their own club rate* at the WC (negative WC-minus-club
-  delta) yet rank in the current top 10 by `final_rating` anyway. Planned fix:
-  redesign around `z(WC_rate - club_rate)` per player, not `z(WC_rate)` and
-  `z(club_rate)` averaged. Not yet implemented — pending design review.
+- **RESOLVED — `relative_score` now measures the project's core premise.**
+  It previously z-scored WC rate and club rate *independently* and averaged
+  them, which measures general quality across both contexts rather than a
+  within-player delta. Caught because Michael Olise, Ousmane Dembélé, and
+  Alphonso Davies all *underperformed their own club rate* at the WC yet
+  ranked in the top 10. Fixed by computing the per-player delta first and
+  standardizing that: `z(WC_rate - club_rate)`. After the fix those three fall
+  to ranks 192, 234, and 301 of 320 — correctly identified as underperforming
+  their own baseline rather than rewarded for a high baseline.
 
-- **Feature leakage risk for Phase 4 (predictive modeling).** `final_rating`
-  is built directly from: `yellow_cards`, `red_cards`, WC `minutes_played`,
-  `Gls`, `Ast`, club `Min` (FBref), `saves`, `clean_sheets`, `goals_conceded`,
-  `matches_played`. None of these 10 columns should be used as a predictive
-  feature for `final_rating` (or any target derived from it) — doing so would
-  let a model partially reconstruct its own label instead of predicting it,
-  inflating validation metrics in a way that wouldn't hold up under scrutiny.
-  Everything else on the original candidate feature list is clean: `position`,
-  `caps`, `career_goals`, `matches_started`, `penalty_goals`, `own_goals`,
-  and club-side `MP`/`Starts`/`TklW`/`Int`/`Crs`/`Fls`/`CrdY`/`CrdR`.
+- **Discipline is an absolute deduction, not a relative one.** Yellows, reds,
+  and own goals subtract flat amounts (-1.00 / -2.50 / -1.75) rather than
+  being z-scored within position. The z-scored version distorted badly: since
+  most players at a position have zero cards, the group's spread was tiny and
+  any nonzero value looked extreme against it — 2 yellows in 95 minutes once
+  produced a -6.3 penalty, roughly five standard deviations of the production
+  score. A failed intermediate attempt to fix this by lowering the *weights*
+  made it worse (it tightened the spread further, pushing that player's
+  z-score to -7.9), which is what motivated abandoning z-scoring for cards
+  entirely. Known data limitation: `yellow_cards` and `red_cards` are separate
+  counts, so a red earned via a second yellow is indistinguishable from a
+  straight red; every red is charged the direct-red rate. Affects 5 of 320
+  players who carry both yellows and a red.
+
+- **Feature leakage for Phase 4 (predictive modeling).** `final_rating` is
+  built directly from: `yellow_cards`, `red_cards`, `own_goals`, WC
+  `minutes_played`, `Gls`, `Ast`, club `Min` (FBref), `saves`, `clean_sheets`,
+  `goals_conceded`, `matches_played`. None of these 11 columns may be used as
+  a predictive feature — doing so would let a model partially reconstruct its
+  own label instead of predicting it, inflating validation metrics in a way
+  that wouldn't hold up under scrutiny. (`own_goals` was a feature until the
+  target switched to absolute deductions; it moved onto this list at that
+  point.) Note that club-side `CrdY`/`CrdR` are *not* leakage — the target
+  uses World Cup cards, these are club-season cards, different data.
 
 - **`match_type` must also be excluded from any feature set**, for a different
-  reason than the 10 above: it's not part of a player's season, it's an
+  reason than the 11 above: it's not part of a player's season, it's an
   artifact of this project's own name-matching pipeline (exact vs. fuzzy
   join). Including it risks the model picking up a spurious correlation
   between match confidence and rating that has nothing to do with football.
@@ -103,9 +114,39 @@ WC↔FBref join and rating model. Add to this as new issues surface.
   project. Excluded from the Phase 4 feature set for this reason, unrelated
   to the leakage issue above — there's no data here to leak or use.
 
-- **Locked feature set for Phase 4 (18 features):** the 6 WC + 8 club-side
-  columns above, plus `market_value_eur`, `height_cm`, `age` (derived from
-  `date_of_birth`), and `nationality_code` — all four fully populated (0
-  nulls) across the 320 matched rows. `Squad` was considered and excluded:
-  high-cardinality (many distinct clubs) relative to n≈300, real overfitting
-  risk.
+- **Locked feature set for Phase 4 (15 features, 305 outfielders):**
+  `position`, `caps`, `career_goals`, `matches_started`, `penalty_goals`,
+  `market_value_eur`, `height_cm`, `age`, `Starts`, and club-side
+  `TklW`/`Int`/`Crs`/`Fls`/`CrdY`/`CrdR` as per-match rates. Zero nulls.
+  Four candidates were considered and excluded:
+  - `Squad` — high-cardinality (many distinct clubs) relative to n=305
+  - `nationality_code` — 41 distinct values on 305 rows (4 countries have a
+    single player), so one-hot encoding would add 41 sparse columns; same
+    overfitting logic as `Squad`
+  - `MP` — correlated r=0.865 with `Starts` (near-duplicate). Keeping `Starts`
+    instead gave a lower CV MAE in 20/20 random seeds. `MP` is still used
+    internally as the per-match rate denominator, just not as a feature.
+  - `own_goals` — moved to the leakage list when it entered the target
+
+- **Near-zero-variance features retained:** `CrdR_per_match` (var 0.0003) and
+  `CrdY_per_match` (0.0088). Red cards are rare enough that the column is
+  nearly constant. Left in rather than dropped — regularization can handle
+  them — but they carry little usable signal.
+
+- **The target appears to be largely unpredictable from these features, and
+  there is a structural reason.** Ridge under 5-fold CV (averaged over 20
+  seeds) scores R² = -0.117 on `final_rating`, -0.047 on `relative_score`, and
+  -0.154 on `card_penalty` — all *worse* than predicting the mean. Strongest
+  single feature/target correlation is |r| = 0.127. This follows from what the
+  target measures: `relative_score` is WC rate minus club rate, which
+  deliberately cancels out the stable, player-specific component. The features
+  (`market_value_eur`, `caps`, `career_goals`, `height_cm`, `age`) describe
+  precisely that stable component. For them to predict the target, there would
+  have to be a systematic "performs above their own baseline in tournaments"
+  effect; the data does not show one. This is a legitimate empirical finding
+  rather than a modeling failure, and is consistent with short-run deviations
+  from established performance being variance-dominated. Measured before the
+  switch to absolute discipline deductions — worth re-checking afterward,
+  since that change rebalanced the target (card-penalty variance fell from
+  0.947 to 0.541, roughly matching `relative_score`'s 0.516 instead of
+  doubling it).
