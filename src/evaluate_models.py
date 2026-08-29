@@ -1,9 +1,9 @@
 """
-Steps 5-6: encode features and build the cross-validation strategy.
+Steps 5-7: encode features, build the cross-validation strategy, and establish
+the baseline every real model has to beat.
 Design: docs/superpowers/specs/2026-08-28-model-evaluation-design.md
 
-Steps 7-9 (baseline, model candidates, CV evaluation) are not implemented yet —
-stopping here so the Step 4 exploratory findings can be reviewed first.
+Steps 8-9 (model candidates, CV evaluation) are not implemented yet.
 
 One-hot encoding lives here rather than in prepare_model_data.py: converting
 text categories to numbers is a requirement of scikit-learn/XGBoost
@@ -11,7 +11,10 @@ specifically, not part of assembling a clean feature set, so model_features.csv
 stays human-readable.
 """
 
+import numpy as np
 import pandas as pd
+from sklearn.dummy import DummyRegressor
+from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import StratifiedKFold
 
 N_SPLITS = 5
@@ -66,4 +69,53 @@ assert all_test_idx == set(range(len(df))), \
 
 print(f"  Overall:  " + ", ".join(f"{pos}={overall[pos]:.3f}" for pos in overall.index))
 print(f"\nFold checks passed: no train/test overlap, all {len(df)} rows covered exactly once.")
-print("\nStopping before Step 7 (baseline) — Step 4 findings need review first.")
+
+
+# ============================================================
+# Step 7: BASELINE
+# ============================================================
+# The number every real model must beat. Two variants, because the metric and
+# the baseline have to agree on what "typical" means:
+#   - mean   minimizes squared error, so it's the natural reference for R2
+#            (R2 is DEFINED against the mean, so mean-baseline R2 is ~0)
+#   - median minimizes absolute error, so it's the HARDER baseline for MAE
+# final_rating is left-skewed (a long negative tail from discipline
+# deductions), so these two differ and reporting only the mean would understate
+# the bar. A model that beats mean-MAE but not median-MAE hasn't really beaten
+# "predict the same number for everyone."
+#
+# Both are fit INSIDE each fold (on training data only), not on the full
+# dataset — otherwise the baseline would peek at the held-out rows and the
+# comparison would be unfair in the model's favor.
+def cv_score(estimator, X, y, folds):
+    """Return (mean MAE, mean R2) across folds, refitting on each fold."""
+    maes, r2s = [], []
+    for train_idx, test_idx in folds:
+        est = estimator()
+        est.fit(X.iloc[train_idx], y.iloc[train_idx])
+        pred = est.predict(X.iloc[test_idx])
+        maes.append(mean_absolute_error(y.iloc[test_idx], pred))
+        r2s.append(r2_score(y.iloc[test_idx], pred))
+    return np.mean(maes), np.std(maes), np.mean(r2s)
+
+
+print("\n" + "=" * 60)
+print("STEP 7: BASELINE (predict one constant for everyone)")
+print("=" * 60)
+
+baselines = {
+    "mean":   lambda: DummyRegressor(strategy="mean"),
+    "median": lambda: DummyRegressor(strategy="median"),
+}
+
+results = {}
+for name, factory in baselines.items():
+    mae, mae_sd, r2 = cv_score(factory, X, y, folds)
+    results[name] = (mae, r2)
+    print(f"  {name:7s} baseline:  MAE = {mae:.4f} (+/-{mae_sd:.4f} across folds)   R2 = {r2:+.4f}")
+
+best_mae = min(results.values(), key=lambda t: t[0])[0]
+print(f"\nTarget spread for scale: final_rating std = {y.std(ddof=1):.4f}, "
+      f"mean = {y.mean():.4f}, median = {y.median():.4f}")
+print(f"\nBAR TO BEAT (Step 9): MAE below {best_mae:.4f}, and R2 above 0.0")
+print("A model scoring worse than this is doing worse than ignoring every feature.")
