@@ -133,20 +133,40 @@ WC↔FBref join and rating model. Add to this as new issues surface.
   nearly constant. Left in rather than dropped — regularization can handle
   them — but they carry little usable signal.
 
-- **The target appears to be largely unpredictable from these features, and
-  there is a structural reason.** Ridge under 5-fold CV (averaged over 20
-  seeds) scores R² = -0.117 on `final_rating`, -0.047 on `relative_score`, and
-  -0.154 on `card_penalty` — all *worse* than predicting the mean. Strongest
-  single feature/target correlation is |r| = 0.127. This follows from what the
-  target measures: `relative_score` is WC rate minus club rate, which
-  deliberately cancels out the stable, player-specific component. The features
-  (`market_value_eur`, `caps`, `career_goals`, `height_cm`, `age`) describe
-  precisely that stable component. For them to predict the target, there would
-  have to be a systematic "performs above their own baseline in tournaments"
-  effect; the data does not show one. This is a legitimate empirical finding
-  rather than a modeling failure, and is consistent with short-run deviations
-  from established performance being variance-dominated. Measured before the
-  switch to absolute discipline deductions — worth re-checking afterward,
-  since that change rebalanced the target (card-penalty variance fell from
-  0.947 to 0.541, roughly matching `relative_score`'s 0.516 instead of
-  doubling it).
+- **RESOLVED (Steps 8-12) — `final_rating` (or `relative_score`) as an exact
+  regression target is not predictable from these features, but a coarser
+  version of the same question is.** This was re-checked properly after the
+  absolute-discipline-penalty change, not left as the stale pre-change
+  estimate. Three regressors (RidgeCV, RandomForest, XGBoost) under 5-fold
+  stratified CV vs. a predict-the-mean/median baseline (MAE 0.7712):
+  RidgeCV MAE 0.7659/R²-0.023, RandomForest MAE 0.7589/R²-0.001, XGBoost
+  MAE 0.7604/R²+0.004 — technically the only one clearing R²>0, but its
+  predictions varied 42% as much as actual `final_rating` while explaining
+  under 1% of variance, meaning it was making confident-looking guesses that
+  were mostly wrong. Residual analysis (Step 11) found a large, structural
+  bias: carded players' ratings were over-predicted by 0.71 on average (they
+  can't be seen coming from a club profile), clean players' under-predicted by
+  0.34. Re-running against `relative_score` alone (discipline removed) made
+  every model *worse*, not better — ruling out "the noisy discipline term is
+  masking real performance signal" as the explanation. `relative_score` is WC
+  rate minus club rate, which deliberately cancels the stable, player-specific
+  component the features describe; there is no reason to expect it to be
+  regressable, and it isn't.
+
+  Reframing as binary classification — did the player over- or under-perform
+  their own club baseline (`relative_score > 0`, a near-balanced 157/148
+  split) — DID find real signal: LogisticRegression scored AUC 0.590 (std
+  0.014 across 25 CV seeds, above 0.55 in 25/25). Verified against a
+  permutation test (labels shuffled 40x): null AUC 95th percentile = 0.566,
+  real AUC clears it — statistically distinguishable from noise, not a lucky
+  split. Driven mainly by `Crs_per_match` (-0.43, crossing-heavy players
+  underperform their own baseline more) and `market_value_eur` (-0.35,
+  regression to the mean — elite players have less room to overshoot their
+  own high baseline). Ceiling stated plainly: AUC 0.59 is weak — a real, small
+  directional tendency, not a tool for confident predictions about any one
+  player.
+
+  **Shipped:** the classifier only (`models/over_underperformance_classifier.joblib`,
+  built by `src/train_final_model.py`), not the regressor — there's nothing
+  in the regression results that outperforms guessing, so nothing to ship
+  there. The regressor's null result is documented here, not as an artifact.
